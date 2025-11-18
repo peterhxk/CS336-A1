@@ -53,39 +53,7 @@ def find_chunk_boundaries(
     # Make sure all boundaries are unique, but might be fewer than desired_num_chunks
     return sorted(set(chunk_boundaries))
 
-def train_bpe( input_path:str,
-               vocab_size:int,
-               special_tokens: list[str]
-               ) -> tuple[dict[int, bytes], list[tuple[bytes,bytes]]] :
-    """
-    input:
-        input_path: Path to a text file with BPE tokenizer training data.
-        vocab_size: A positive integer that defines the maximum final vocabulary size (including the initial byte vocabulary,
-        vocabulary items produced from merging, and any special tokens).
-        special_tokens: A list of strings to add to the vocabulary. These special tokens do not otherwize affect BPE training.
-    return:
-        vocab: the tokenizer vocabulary, a mapping from int (token ID in the vocabulary) to bytes (token bytes)
-        merges: A list of BPE merges produced from training. Each list item is a tuple of bytes (<token1>, <token2>),
-        representing that <token1> was merged with <token2>. The merges should be ordered by order of creation
-    """
-    binary_special_tokens = [token.encode("utf-8") for token in special_tokens]
-
-    with open(input_path, "rb") as f:
-        num_processes = 5
-        boundaries = find_chunk_boundaries(f, num_processes, binary_special_tokens)
-    args = []
-    for start, end in zip(boundaries[:-1], boundaries[1:]):
-        args.append((input_path, start, end, binary_special_tokens))
-    with Pool(len(args)) as pool:
-        results = pool.starmap(count_pair, args)
-    total_count = defaultdict(int)
-    for count_map in results:
-        for k, v in count_map.items():
-            total_count[k] += v
-    print(total_count)
-    return
-
-def count_pair(input_path, start, end, binary_special_tokens):
+def count_pair(input_path:str, start:int, end:int, binary_special_tokens:list[bytes]):
     """
         Counts byte pairs
     """
@@ -106,6 +74,41 @@ def count_pair(input_path, start, end, binary_special_tokens):
 
     return count_map
 
+def compute_merge(count, vocab_size, special_tokens_count) -> tuple[dict[int, bytes], list[tuple[bytes,bytes]]]:
+    remaining_vocab_size = vocab_size-256-special_tokens_count
+    return 
+
+
+def train_bpe( input_path:str,
+               vocab_size:int,
+               special_tokens: list[str]
+               ) -> tuple[dict[int, bytes], list[tuple[bytes,bytes]]] :
+    """
+    input:
+        input_path: Path to a text file with BPE tokenizer training data.
+        vocab_size: A positive integer that defines the maximum final vocabulary size (including the initial byte vocabulary,
+        vocabulary items produced from merging, and any special tokens).
+        special_tokens: A list of strings to add to the vocabulary. These special tokens do not otherwize affect BPE training.
+    return:
+        vocab: the tokenizer vocabulary, a mapping from int (token ID in the vocabulary) to bytes (token bytes)
+        merges: A list of BPE merges produced from training. Each list item is a tuple of bytes (<token1>, <token2>),
+        representing that <token1> was merged with <token2>. The merges should be ordered by order of creation
+    """
+    binary_special_tokens = [token.encode("utf-8") for token in special_tokens]
+    with open(input_path, "rb") as f:
+        num_processes = 5
+        boundaries = find_chunk_boundaries(f, num_processes, binary_special_tokens)
+    args = []
+    for start, end in zip(boundaries[:-1], boundaries[1:]):
+        args.append((input_path, start, end, binary_special_tokens))
+    with Pool(len(args)) as pool:
+        results = pool.starmap(count_pair, args)
+    total_count = defaultdict(int)
+    for count_map in results:
+        for k, v in count_map.items():
+            total_count[k] += v
+    vocab, merges = compute_merge(total_count, vocab_size, len(special_tokens))
+    return vocab, merges
 
 
 

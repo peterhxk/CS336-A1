@@ -1,4 +1,5 @@
 from multiprocessing import Pool, Process
+from collections import defaultdict
 import os
 from typing import BinaryIO
 
@@ -72,18 +73,38 @@ def train_bpe( input_path:str,
     with open(input_path, "rb") as f:
         num_processes = 5
         boundaries = find_chunk_boundaries(f, num_processes, binary_special_tokens)
-        # The following is a serial implementation, but you can parallelize this
-        # by sending each start/end pair to a set of processes.
-        for start, end in zip(boundaries[:-1], boundaries[1:]):
-            f.seek(start)
-            chunk = f.read(end - start).decode("utf-8", errors="ignore")
-            # Run pre-tokenization on your chunk and store the counts for each pre-token
+    args = []
+    for start, end in zip(boundaries[:-1], boundaries[1:]):
+        args.append((input_path, start, end, binary_special_tokens))
+    with Pool(len(args)) as pool:
+        results = pool.map(count_pair, args)
+    print(results)
     return
 
-def split(f, start, end, binary_special_tokens):
-    return x * x
+def count_pair(input_path, start, end, binary_special_tokens):
+    """
+        Counts byte pairs
+    """
+    with open(input_path, "rb") as f:
+        f.seek(start)
+        init_chunk = f.read(end-start)
+    splited_chunks = [init_chunk]
+    for t in binary_special_tokens:
+        for i in range(len(splited_chunks)):
+            arr = splited_chunks[i].split(t)
+            splited_chunks[i] = arr[0]
+            for chunk in arr[1:]:
+                splited_chunks.append(chunk)
+    count_map = defaultdict(int)
+    for splited_chunk in splited_chunks:
+        utf8_encoded = splited_chunk.encode("utf-8")
+        for i, j in zip(utf8_encoded, utf8_encoded[1:]):
+            count_map[(i, j)] += 1
+            
+    return count_map
+
+
+
 
 if __name__ == "__main__":
-    with Pool(4) as pool:  # 4 processes
-        results = pool.map(square, [1, 2, 3, 4, 5])
-    print(results)
+    train_bpe("../../data/TinyStoriesV2-GPT4-valid.txt",5,["<|endoftext|>"])

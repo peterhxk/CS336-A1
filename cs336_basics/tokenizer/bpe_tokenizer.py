@@ -77,8 +77,12 @@ def train_bpe( input_path:str,
     for start, end in zip(boundaries[:-1], boundaries[1:]):
         args.append((input_path, start, end, binary_special_tokens))
     with Pool(len(args)) as pool:
-        results = pool.map(count_pair, args)
-    print(results)
+        results = pool.starmap(count_pair, args)
+    total_count = defaultdict(int)
+    for count_map in results:
+        for k, v in count_map.items():
+            total_count[k] += v
+    print(total_count)
     return
 
 def count_pair(input_path, start, end, binary_special_tokens):
@@ -97,10 +101,9 @@ def count_pair(input_path, start, end, binary_special_tokens):
                 splited_chunks.append(chunk)
     count_map = defaultdict(int)
     for splited_chunk in splited_chunks:
-        utf8_encoded = splited_chunk.encode("utf-8")
-        for i, j in zip(utf8_encoded, utf8_encoded[1:]):
+        for i, j in zip(splited_chunk, splited_chunk[1:]):
             count_map[(i, j)] += 1
-            
+
     return count_map
 
 

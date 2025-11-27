@@ -18,6 +18,7 @@ def find_chunk_boundaries(
     # Get total file size in bytes
     file.seek(0, os.SEEK_END)
     file_size = file.tell()
+    print(file_size)
     file.seek(0)
 
     chunk_size = file_size // desired_num_chunks
@@ -53,13 +54,23 @@ def find_chunk_boundaries(
     # Make sure all boundaries are unique, but might be fewer than desired_num_chunks
     return sorted(set(chunk_boundaries))
 
-def count_pair(input_path:str, start:int, end:int, binary_special_tokens:list[bytes]):
+def parallel_count(body, boundaries, binary_special_tokens):
+    args = []
+    for start, end in zip(boundaries[:-1], boundaries[1:]):
+        args.append((body[start:end], binary_special_tokens))
+    with Pool(len(args)) as pool:
+        results = pool.starmap(count_pair, args)
+    
+    total_count = defaultdict(int)
+    for count_map in results:
+        for k, v in count_map.items():
+            total_count[k] += v
+    return total_count
+    
+def count_pair(init_chunk:str , binary_special_tokens:list[bytes]):
     """
-        Counts byte pairs
+        Counts byte pairs used for parallel_count
     """
-    with open(input_path, "rb") as f:
-        f.seek(start)
-        init_chunk = f.read(end-start)
     splited_chunks = [init_chunk]
     for t in binary_special_tokens:
         for i in range(len(splited_chunks)):
@@ -74,9 +85,50 @@ def count_pair(input_path:str, start:int, end:int, binary_special_tokens:list[by
 
     return count_map
 
-def compute_merge(count, vocab_size, special_tokens_count) -> tuple[dict[int, bytes], list[tuple[bytes,bytes]]]:
-    remaining_vocab_size = vocab_size-256-special_tokens_count
-    return 
+def parallel_merge(body, boundaries, pair, new_index) -> tuple[str,list[int]]:
+    args = []
+    for start, end in zip(boundaries[:-1], boundaries[1:]):
+        args.append((body[start:end], pair, new_index))
+    
+    with Pool(len(args)) as pool:
+        results = pool.starmap(count_pair, args)
+    
+    new_body = ""
+    for i, chunk, offset in enumerate(results):
+        new_body += chunk
+        boundaries[i+1] -= offset
+    return new_body, boundaries
+
+def compute_merge(chunk, pair, new_ind) -> tuple[str, int]:
+    """
+    Docstring for compute_merge
+    Merges chunks with new index used for parallel_merge
+    
+    :param chunk: Description
+    :param pair: Description
+    :param new_ind: Description
+    :return: Description
+    :rtype: tuple[str, int]
+    """
+    i, j = 0, 0
+    ind1, ind2 = pair
+    while i < len(chunk)-1:
+        if i+1 == len(chunk):
+            chunk[j] = chunk[i]
+            j += 1
+            i += 1
+        elif chunk[i] == ind1 and chunk[i+1] == ind2:
+            chunk[j] = new_ind
+            i += 2
+            j += 1
+        else:
+            chunk[j] = chunk[i]
+            i += 1
+            j += 1
+    new_chunk = chunk[:j]
+    offset = i-j
+    return new_chunk, offset
+
 
 
 def train_bpe( input_path:str,
@@ -94,23 +146,31 @@ def train_bpe( input_path:str,
         merges: A list of BPE merges produced from training. Each list item is a tuple of bytes (<token1>, <token2>),
         representing that <token1> was merged with <token2>. The merges should be ordered by order of creation
     """
+    merges: dict[tuple[int,int],int] = {}
+    vocab: dict[int, bytes] = {x: bytes([x]) for x in range(256)}
     binary_special_tokens = [token.encode("utf-8") for token in special_tokens]
+    remaining_vocab_size = vocab_size-256-len(special_tokens)
+    print(remaining_vocab_size)
+
     with open(input_path, "rb") as f:
         num_processes = 5
         boundaries = find_chunk_boundaries(f, num_processes, binary_special_tokens)
-    args = []
-    for start, end in zip(boundaries[:-1], boundaries[1:]):
-        args.append((input_path, start, end, binary_special_tokens))
-    with Pool(len(args)) as pool:
-        results = pool.starmap(count_pair, args)
-    total_count = defaultdict(int)
-    for count_map in results:
-        for k, v in count_map.items():
-            total_count[k] += v
-    vocab, merges = compute_merge(total_count, vocab_size, len(special_tokens))
+        body = f.read()
+
+    for i in range(remaining_vocab_size):
+        total_count = parallel_count(body, boundaries, binary_special_tokens)
+        most_common_pair = max(total_count, key=total_count.get)
+        ind1,ind2 = most_common_pair
+
+        #merge that pair
+        new_index = 256 + i
+        merges[most_common_pair] = new_index
+        vocab[new_index] = vocab[ind1]+vocab[ind2]
+        body, boundaries = parallel_merge(body, boundaries, most_common_pair, new_index)
+    print(f"result: {vocab}, {merges}")
     return vocab, merges
 
 
 
 if __name__ == "__main__":
-    train_bpe("../../data/TinyStoriesV2-GPT4-valid.txt",5,["<|endoftext|>"])
+    train_bpe("../../data/TinyStoriesV2-GPT4-valid.txt",300,["<|endoftext|>"])

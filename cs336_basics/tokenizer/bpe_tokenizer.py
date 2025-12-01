@@ -3,6 +3,7 @@ from collections import defaultdict
 import os
 from typing import BinaryIO
 import time
+import regex as re
 
 def stamp(msg):
     print(f"[{time.strftime('%H:%M:%S')}] {msg}")
@@ -124,6 +125,52 @@ def compute_merge(chunk, pair, new_ind) -> tuple[list[int], int]:
     offset = i-j
     return new_chunk, offset
 
+def count_all_pairs(indices: list[int], special_ids: set[int]) -> dict[tuple[int,int], int]:
+    count_map = defaultdict(int)
+    for i, j in zip(indices, indices[1:]):
+        if i in special_ids or j in special_ids:
+            continue  # do not count pairs that involve a special token
+        count_map[(i, j)] += 1
+    return count_map
+
+def merge_once(indices: list[int], pair: tuple[int,int], new_ind: int) -> list[int]:
+    ind1, ind2 = pair
+    n = len(indices)
+    i = 0
+    out = []
+    while i < n:
+        if i+1 < n and indices[i] == ind1 and indices[i+1] == ind2:
+            out.append(new_ind)
+            i += 2
+        else:
+            out.append(indices[i])
+            i += 1
+    return out
+
+def apply_special_tokens(body: bytes, special_token_ids: dict[bytes, int]) -> list[int]:
+    """
+    Replace each special token byte sequence with a single integer ID.
+    Returns: (indices list[int], next_free_index)
+    """
+    i = 0
+    indices: list[int] = []
+
+    # Precompute tokens sorted by length (longest first) to avoid partial overlaps
+    tokens_sorted = sorted(special_token_ids.items(), key=lambda kv: -len(kv[0]))
+
+    while i < len(body):
+        matched = False
+        for tok, tid in tokens_sorted:
+            if body[i:i+len(tok)] == tok:
+                indices.append(tid)
+                i += len(tok)
+                matched = True
+                break
+        if not matched:
+            indices.append(body[i])
+            i += 1
+
+    return indices
 
 
 def train_bpe( input_path:str,
@@ -141,27 +188,39 @@ def train_bpe( input_path:str,
         merges: A list of BPE merges produced from training. Each list item is a tuple of bytes (<token1>, <token2>),
         representing that <token1> was merged with <token2>. The merges should be ordered by order of creation
     """
-    merges: dict[tuple[int,int],int] = {}
+    merges: list[tuple[bytes, bytes]] = []
     vocab: dict[int, bytes] = {x: bytes([x]) for x in range(256)}
     binary_special_tokens = [token.encode("utf-8") for token in special_tokens]
-    remaining_vocab_size = vocab_size-256-len(special_tokens)
+    # assign fixed IDs to each special token
+    special_token_ids: dict[bytes, int] = {}
+    next_id = 256
+    for tok in binary_special_tokens:
+        vocab[next_id] = tok
+        special_token_ids[tok] = next_id
+        next_id += 1
+    special_ids = set(special_token_ids.values())
+
+    # how many merges can we still add?
+    remaining_vocab_size = vocab_size - next_id
 
     stamp("Starting tokenizer")
 
     with open(input_path, "rb") as f:
-        num_processes = 5
-        boundaries = find_chunk_boundaries(f, num_processes, binary_special_tokens)
-        f.seek(0)
+        # num_processes = 5
+        # boundaries = find_chunk_boundaries(f, num_processes, binary_special_tokens)
+        # f.seek(0)
         body = f.read()
-        indices = list(body)
+        indices = apply_special_tokens(body, special_token_ids)
+
     
-    stamp(f"Running BPE tokenizer with {min(len(boundaries)-1, os.cpu_count())} processors")
+    # stamp(f"Running BPE tokenizer with {min(len(boundaries)-1, os.cpu_count())} processors")
 
 
     for i in range(remaining_vocab_size):
         iter_start = time.time()
 
-        total_count = parallel_count(indices, boundaries, binary_special_tokens)
+        total_count = count_all_pairs(indices, special_ids)
+        # total_count = parallel_count(indices, boundaries, binary_special_tokens)
         most_common_pair = max(total_count, key=total_count.get)
         ind1,ind2 = most_common_pair
         
@@ -169,16 +228,18 @@ def train_bpe( input_path:str,
 
 
         #merge that pair
-        new_index = 256 + i
-        merges[most_common_pair] = new_index
+        new_index = next_id
+        next_id += 1
+        merges.append((vocab[ind1],vocab[ind2]))
         vocab[new_index] = vocab[ind1]+vocab[ind2]
-        indices, boundaries = parallel_merge(indices, boundaries, most_common_pair, new_index)
-        
+        # indices, boundaries = parallel_merge(indices, boundaries, most_common_pair, new_index)
+        indices = merge_once(indices, most_common_pair, new_index)
+
         iter_end = time.time()
         stamp(f"Iteration {i+1} completed in {iter_end - iter_start:.2f}s")
 
 
-    stamp(f"result: {vocab}, {merges}")
+    # stamp(f"result: {vocab}, {merges}")
     return vocab, merges
 
 
